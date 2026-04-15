@@ -118,13 +118,16 @@ export const applyTemplateToData = async (
   templateFile: File,
   dataFile: File
 ): Promise<Blob> => {
+  console.log("Starting template application...");
   const templateWb = await readWorkbook(templateFile);
   const dataWb = await readWorkbook(dataFile);
+  console.log("Workbooks loaded.");
 
   const newWb = XLSX.utils.book_new();
 
   // Process each sheet present in the template
   for (const sheetName of templateWb.SheetNames) {
+    console.log(`Processing sheet: ${sheetName}`);
     const templateSheet = templateWb.Sheets[sheetName];
 
     // Match by sheet name; fall back to first sheet of data file
@@ -133,10 +136,32 @@ export const applyTemplateToData = async (
       : dataWb.SheetNames[0];
     const dataSheet = dataWb.Sheets[dataSheetName];
 
-    if (!templateSheet || !dataSheet) continue;
+    if (!templateSheet || !dataSheet) {
+      console.log(`Skipping sheet ${sheetName}: not found in template or data.`);
+      continue;
+    }
 
     const templateRange = XLSX.utils.decode_range(templateSheet["!ref"] || "A1");
-    const dataRange = XLSX.utils.decode_range(dataSheet["!ref"] || "A1");
+    
+    // Safety: don't trust a potentially massive !ref from the data file.
+    // We calculate the actual last row/column with content.
+    let dataRange = XLSX.utils.decode_range(dataSheet["!ref"] || "A1");
+    let actualMaxRow = 0;
+    let actualMaxCol = 0;
+    
+    // Scan cells to find the true data boundaries
+    Object.keys(dataSheet).forEach(key => {
+      if (key[0] === '!') return;
+      const cell = XLSX.utils.decode_cell(key);
+      if (cell.r > actualMaxRow) actualMaxRow = cell.r;
+      if (cell.c > actualMaxCol) actualMaxCol = cell.c;
+    });
+
+    // Update dataRange to the actual content boundaries
+    dataRange.e.r = actualMaxRow;
+    dataRange.e.c = actualMaxCol;
+
+    console.log(`Template range: ${templateSheet["!ref"]}, True Data range: R:${actualMaxRow} C:${actualMaxCol}`);
 
     // Row 2 of the template (0-based index 1) is the formula pattern row
     const FORMULA_ROW_IDX = 1;
@@ -150,6 +175,7 @@ export const applyTemplateToData = async (
         formulaCells[c] = cell;
       }
     }
+    console.log(`Detected ${Object.keys(formulaCells).length} formulas in template.`);
 
     const outputSheet: XLSX.WorkSheet = {};
 
@@ -164,6 +190,8 @@ export const applyTemplateToData = async (
     const maxCol = Math.max(templateRange.e.c, dataRange.e.c);
     let lastOutputRow = 0;
 
+    console.log(`Applying to ${dataRange.e.r} rows and ${maxCol} columns...`);
+
     // ── Rows 2+: data rows from data file (skip its header at dr=0) ────────
     for (let dr = 1; dr <= dataRange.e.r; dr++) {
       const outputRowIdx = dr; // Same 0-based index: data row 1 → output index 1 (Excel row 2)
@@ -174,7 +202,6 @@ export const applyTemplateToData = async (
 
         if (formulaCells[c] !== undefined) {
           // Column has a formula in the template → apply with row adjustment
-          // and preserve formatting styles from the original cell.
           const tCell = formulaCells[c];
           if (tCell.f) {
             const adjusted = adjustFormulaRow(
@@ -193,7 +220,6 @@ export const applyTemplateToData = async (
           }
         }
       }
-
       lastOutputRow = outputRowIdx;
     }
 
@@ -211,7 +237,9 @@ export const applyTemplateToData = async (
     XLSX.utils.book_append_sheet(newWb, outputSheet, sheetName);
   }
 
+  console.log("Writing output workbook...");
   const out = XLSX.write(newWb, { type: "array", bookType: "xlsx" });
+  console.log("Finished.");
   return new Blob([out], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
