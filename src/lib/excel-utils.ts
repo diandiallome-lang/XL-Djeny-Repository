@@ -85,18 +85,18 @@ function adjustFormulaRow(formula: string, fromExcelRow: number, toExcelRow: num
   const offset = toExcelRow - fromExcelRow;
   if (offset === 0) return formula;
 
-  // Matches: optional $ + 1-3 uppercase letters + optional $ + digits
-  // Group 1: column part (e.g. "A", "$A")
-  // Group 2: optional $ before row number (absolute row indicator)
-  // Group 3: row digits
-  return formula.replace(/(\$?[A-Z]{1,3})(\$?)(\d+)/g, (match, col, dollar, row) => {
-    if (dollar === "$") {
-      // Absolute row reference — keep as-is
-      return match;
-    }
-    // Relative row reference — shift by offset
+  // Robust regex to avoid matching function names (e.g., LOG10) or word endings instead of cell references.
+  // Group 1: Prefix character (start of string or any non-letter character)
+  // Group 2: Column (1-3 letters, optional $)
+  // Group 3: Optional absolute row marker ($)
+  // Group 4: Row digits
+  const regex = /(^|[^A-Za-z])(\$?[A-Z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_.\(])/g;
+
+  return formula.replace(regex, (match, prefix, col, dollar, row) => {
+    if (dollar === "$") return match; // Absolute row
     const newRow = parseInt(row, 10) + offset;
-    return `${col}${newRow}`;
+    if (newRow < 1) return match; // Invalid row result
+    return `${prefix}${col}${newRow}`;
   });
 }
 
@@ -113,18 +113,6 @@ const readWorkbook = (file: File): Promise<XLSX.WorkBook> =>
 
 /**
  * Applies the formulas from a template file to a raw data file.
- *
- * Template structure (expected):
- *   Row 1 — Column headers
- *   Row 2 — Formula row (defines the pattern for every subsequent row)
- *
- * Data file structure:
- *   Row 1 — Headers (ignored; template headers are used in the output)
- *   Rows 2+ — Raw data values
- *
- * Output structure:
- *   Row 1 — Headers from template
- *   Rows 2+ — Data rows with formulas from template applied (row references adjusted)
  */
 export const applyTemplateToData = async (
   templateFile: File,
@@ -154,12 +142,12 @@ export const applyTemplateToData = async (
     const FORMULA_ROW_IDX = 1;
     const FORMULA_EXCEL_ROW = 2; // 1-based row number as seen in Excel
 
-    // Collect formulas keyed by column index
-    const formulas: Record<number, string> = {};
+    // Collect formula cells keyed by column index to preserve formatting
+    const formulaCells: Record<number, XLSX.CellObject> = {};
     for (let c = templateRange.s.c; c <= templateRange.e.c; c++) {
       const cell = templateSheet[XLSX.utils.encode_cell({ r: FORMULA_ROW_IDX, c })];
-      if (cell?.f) {
-        formulas[c] = cell.f;
+      if (cell && cell.f) {
+        formulaCells[c] = cell;
       }
     }
 
@@ -184,14 +172,18 @@ export const applyTemplateToData = async (
       for (let c = 0; c <= maxCol; c++) {
         const outputAddr = XLSX.utils.encode_cell({ r: outputRowIdx, c });
 
-        if (formulas[c] !== undefined) {
+        if (formulaCells[c] !== undefined) {
           // Column has a formula in the template → apply with row adjustment
-          const adjusted = adjustFormulaRow(
-            formulas[c],
-            FORMULA_EXCEL_ROW,
-            outputExcelRow
-          );
-          outputSheet[outputAddr] = { f: adjusted };
+          // and preserve formatting styles from the original cell.
+          const tCell = formulaCells[c];
+          if (tCell.f) {
+            const adjusted = adjustFormulaRow(
+              tCell.f,
+              FORMULA_EXCEL_ROW,
+              outputExcelRow
+            );
+            outputSheet[outputAddr] = { ...tCell, f: adjusted, v: undefined };
+          }
         } else {
           // Column is a plain data column → copy value from data file
           const dataAddr = XLSX.utils.encode_cell({ r: dr, c });
