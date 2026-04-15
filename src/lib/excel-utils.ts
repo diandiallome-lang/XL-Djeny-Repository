@@ -106,6 +106,15 @@ function findBestSheetMatch(target: string, availableSheets: string[]): string {
 
 /**
  * Adjusts row references in an Excel formula and normalizes sheet names.
+ *
+ * IMPORTANT — what this function must NOT do:
+ *  - Do NOT remove _xlfn. or _xlws. prefixes. SheetJS uses them internally
+ *    to identify modern functions (UNIQUE, FILTER, XLOOKUP, VSTACK…). Removing
+ *    them makes Excel unable to resolve the function name → #NOM? / #NAME? error.
+ *  - Do NOT transform ANCHORARRAY(...) into the # spill-range notation. SheetJS
+ *    v0.18 cannot serialize the # operator back to valid OOXML XML, which causes
+ *    Excel's repair dialog ("enregistrements supprimés / formule illisible").
+ *    SheetJS knows how to write ANCHORARRAY back correctly — leave it alone.
  */
 function adjustFormulaRow(
   formula: string,
@@ -115,17 +124,12 @@ function adjustFormulaRow(
 ): string {
   let processed = formula;
 
-  // 1. Clean up technical prefixes that can confuse Excel after processing
-  processed = processed.replace(/(_xlws\.|_xlfn\.)/g, "");
-
-  // 2. Handle the "Spill Operator" transformation.
-  // Convert library-specific ANCHORARRAY(A2) back to standard Excel A2#
-  processed = processed.replace(/ANCHORARRAY\(([^)]+)\)/g, "$1#");
-
-  // 3. Harmonize separators (Standardize on ',' to help Excel's auto-translation)
+  // 1. Normalize argument separators.
+  //    Proper .xlsx XML must use ',' but some files saved by non-English Excel
+  //    incorrectly store ';'. We normalise to avoid parse errors.
   processed = processed.replace(/;/g, ",");
 
-  // 4. Normalize Sheet Names with typo tolerance (e.g. ROC -> RDC)
+  // 2. Normalize sheet names referenced in the formula (typo tolerance).
   const sheetRegex = /'([^']+)'!|([A-Za-z0-9._]+)!/g;
   processed = processed.replace(sheetRegex, (match, quoted, unquoted) => {
     const rawName = quoted || unquoted;
@@ -133,16 +137,18 @@ function adjustFormulaRow(
     return bestMatch.includes(" ") ? `'${bestMatch}'!` : `${bestMatch}!`;
   });
 
-  // 5. Adjust Row References
+  // 3. Adjust relative row references.
   const offset = toExcelRow - fromExcelRow;
   if (offset === 0) return processed;
 
-  const rowRegex = /(^|[^A-Za-z])(\$?[A-Z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_.\(])/g;
+  // Matches: optional leading non-letter, column letters, optional $, row digits.
+  // Negative lookahead prevents matching numbers inside function names.
+  const rowRegex = /(^|[^A-Za-z])(\$?[A-Z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_.(])/g;
 
   return processed.replace(rowRegex, (match, prefix, col, dollar, row) => {
-    if (dollar === "$") return match;
+    if (dollar === "$") return match; // Absolute row — keep as-is
     const newRow = parseInt(row, 10) + offset;
-    if (newRow < 1) return match;
+    if (newRow < 1) return match; // Guard against going above row 1
     return `${prefix}${col}${newRow}`;
   });
 }
@@ -231,9 +237,16 @@ export const applyTemplateToData = async (
       if (pCell.f) {
         try {
           const adjusted = adjustFormulaRow(pCell.f, FORMULA_EXCEL_ROW, outputExcelRow, availableSheets);
-          workTraitSheet[outputAddr] = { ...pCell, f: adjusted, v: undefined };
-        } catch (err) {
-          workTraitSheet[outputAddr] = { ...pCell, f: pCell.f, v: undefined };
+          // Build a clean cell: only the formula + type + optional number format.
+          // Do NOT spread pCell — mixing the original cached value (v) and internal
+          // SheetJS metadata with a new formula string corrupts the XLSX XML.
+          const newCell: XLSX.CellObject = { f: adjusted };
+          if (pCell.t) newCell.t = pCell.t; // Preserve result type (n/s/b/e)
+          if (pCell.z) newCell.z = pCell.z; // Preserve number format code
+          workTraitSheet[outputAddr] = newCell;
+        } catch {
+          // On error keep the original pattern cell so the sheet stays readable
+          workTraitSheet[outputAddr] = { f: pCell.f, t: pCell.t };
         }
       } else {
         workTraitSheet[outputAddr] = { ...pCell };
