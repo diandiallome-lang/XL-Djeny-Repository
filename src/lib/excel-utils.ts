@@ -78,30 +78,50 @@ export const getTemplateFormulas = async (file: File): Promise<FormulaPreview[]>
 };
 
 /**
- * Adjusts row references in an Excel formula.
- *
- * Only RELATIVE row references are shifted; absolute references ($) are preserved.
- *
- * Examples (fromRow=2, toRow=5, offset=+3):
- *   "A2+B2"          → "A5+B5"
- *   "SUM(A2:A10)"    → "SUM(A5:A13)"
- *   "VLOOKUP(A2,$C$1:$D$100,2,0)" → "VLOOKUP(A5,$C$1:$D$100,2,0)"
+ * Finds the sheet name in the current workbook that best matches a reference.
+ * Ignores spaces, underscores, and case.
  */
-function adjustFormulaRow(formula: string, fromExcelRow: number, toExcelRow: number): string {
+function findBestSheetMatch(target: string, availableSheets: string[]): string {
+  const normalize = (s: string) => s.replace(/[^A-Z0-9]/gi, "").toLowerCase();
+  const normalizedTarget = normalize(target);
+  
+  const match = availableSheets.find(s => normalize(s) === normalizedTarget);
+  return match || target;
+}
+
+/**
+ * Adjusts row references in an Excel formula and normalizes sheet names.
+ */
+function adjustFormulaRow(
+  formula: string,
+  fromExcelRow: number,
+  toExcelRow: number,
+  availableSheets: string[]
+): string {
+  // 1. Clean up technical prefixes like _xlws. or _xlfn. that can cause #NAME?
+  let processed = formula.replace(/(_xlws\.|_xlfn\.)/g, "");
+
+  // 2. Normalize Sheet Names (e.g., 'Sheet_Name'! -> 'Sheet Name'!)
+  // This regex matches sheet names with single quotes or without quotes before the !
+  const sheetRegex = /'([^']+)'!|([A-Za-z0-9._]+)!/g;
+  processed = processed.replace(sheetRegex, (match, quoted, unquoted) => {
+    const rawName = quoted || unquoted;
+    const bestMatch = findBestSheetMatch(rawName, availableSheets);
+    
+    // Re-wrap in quotes if the new name has spaces
+    return bestMatch.includes(" ") ? `'${bestMatch}'!` : `${bestMatch}!`;
+  });
+
+  // 3. Adjust Row References
   const offset = toExcelRow - fromExcelRow;
-  if (offset === 0) return formula;
+  if (offset === 0) return processed;
 
-  // Robust regex to avoid matching function names (e.g., LOG10) or word endings instead of cell references.
-  // Group 1: Prefix character (start of string or any non-letter character)
-  // Group 2: Column (1-3 letters, optional $)
-  // Group 3: Optional absolute row marker ($)
-  // Group 4: Row digits
-  const regex = /(^|[^A-Za-z])(\$?[A-Z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_.\(])/g;
+  const rowRegex = /(^|[^A-Za-z])(\$?[A-Z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_.\(])/g;
 
-  return formula.replace(regex, (match, prefix, col, dollar, row) => {
+  return processed.replace(rowRegex, (match, prefix, col, dollar, row) => {
     if (dollar === "$") return match; // Absolute row
     const newRow = parseInt(row, 10) + offset;
-    if (newRow < 1) return match; // Invalid row result
+    if (newRow < 1) return match;
     return `${prefix}${col}${newRow}`;
   });
 }
@@ -143,7 +163,6 @@ export const applyTemplateToData = async (
   // 2. Determine Bounds
   const templateRange = XLSX.utils.decode_range(templateTraitSheet["!ref"] || "A1");
   
-  // Calculate true data range (ignoring empty trailing rows/cols if any)
   let actualDataMaxRow = 0;
   Object.keys(dataAnchorSheet).forEach(key => {
     if (key[0] === '!') return;
@@ -157,26 +176,25 @@ export const applyTemplateToData = async (
   // 3. Create the Output Workbook
   const newWb = XLSX.utils.book_new();
   
-  // 4. Copy all original sheets from the data file first
+  // 4. Copy all original sheets from the data file
   for (const sn of dataWb.SheetNames) {
-    if (sn === "Traitement") continue; // We will handle Traitement separately
+    if (sn === "Traitement") continue;
     XLSX.utils.book_append_sheet(newWb, dataWb.Sheets[sn], sn);
   }
 
   // 5. Generate the NEW 'Traitement' sheet
   const outTraitSheet: XLSX.WorkSheet = {};
   
-  // Copy Column widths from template
   if (templateTraitSheet["!cols"]) outTraitSheet["!cols"] = [...templateTraitSheet["!cols"]];
 
-  // Phase A: Copy Headers (Row 1) from template
+  // Phase A: Copy Headers
   for (let c = templateRange.s.c; c <= templateRange.e.c; c++) {
     const addr = XLSX.utils.encode_cell({ r: 0, c });
     const cell = templateTraitSheet[addr];
     if (cell) outTraitSheet[addr] = { ...cell };
   }
 
-  // Phase B: Collect Pattern Cells from Template Row 2
+  // Phase B: Collect Pattern Cells
   const patternCells: Record<number, XLSX.CellObject> = {};
   for (let c = templateRange.s.c; c <= templateRange.e.c; c++) {
     const addr = XLSX.utils.encode_cell({ r: FORMULA_ROW_IDX, c });
@@ -184,11 +202,11 @@ export const applyTemplateToData = async (
     if (cell) patternCells[c] = cell;
   }
 
-  // Phase C: Generate Rows 2 to actualDataMaxRow + 1
-  for (let dr = 0; dr <= actualDataMaxRow - 0; dr++) {
-    // We want to generate a row for each row in the anchor data sheet.
-    // Excel Row 1 is header. Data starts row 2.
-    // If dr=1 (2nd row of data), output index=1.
+  // List of available sheet names for normalization
+  const availableSheets = dataWb.SheetNames;
+
+  // Phase C: Generate Rows
+  for (let dr = 0; dr <= actualDataMaxRow; dr++) {
     const outputRowIdx = dr + 1; 
     const outputExcelRow = outputRowIdx + 1;
 
@@ -199,17 +217,20 @@ export const applyTemplateToData = async (
       const outputAddr = XLSX.utils.encode_cell({ r: outputRowIdx, c });
 
       if (pCell.f) {
-        // Apply formula mirroring
-        const adjusted = adjustFormulaRow(pCell.f, FORMULA_EXCEL_ROW, outputExcelRow);
+        // Apply formula mirroring + sheet normalization
+        const adjusted = adjustFormulaRow(
+          pCell.f, 
+          FORMULA_EXCEL_ROW, 
+          outputExcelRow,
+          availableSheets
+        );
         outTraitSheet[outputAddr] = { ...pCell, f: adjusted, v: undefined };
       } else {
-        // Copy static value/style
         outTraitSheet[outputAddr] = { ...pCell };
       }
     }
   }
 
-  // Set reference range
   outTraitSheet["!ref"] = XLSX.utils.encode_range({
     s: { r: 0, c: 0 },
     e: { r: actualDataMaxRow + 1, c: templateRange.e.c }
@@ -217,10 +238,8 @@ export const applyTemplateToData = async (
 
   XLSX.utils.book_append_sheet(newWb, outTraitSheet, "Traitement");
 
-  console.log("Writing output workbook with mirrored 'Traitement' sheet...");
+  console.log("Writing output workbook...");
   const out = XLSX.write(newWb, { type: "array", bookType: "xlsx" });
-  console.log("Finished.");
-  
   return new Blob([out], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
