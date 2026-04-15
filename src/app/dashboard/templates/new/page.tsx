@@ -1,11 +1,10 @@
-
 "use client";
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ref, uploadBytes } from "firebase/storage";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
-import { useAuth, useFirestore, useStorage, useUser } from "@/firebase";
+import { useFirestore, useStorage, useUser } from "@/firebase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,6 +13,8 @@ import { getExcelMetadata, ExcelMetadata } from "@/lib/excel-utils";
 import { useToast } from "@/hooks/use-toast";
 import { Upload, FileSpreadsheet, Loader2, ArrowLeft, CheckCircle2 } from "lucide-react";
 import Link from "next/link";
+import { errorEmitter } from "@/firebase/error-emitter";
+import { FirestorePermissionError } from "@/firebase/errors";
 
 export default function NewTemplatePage() {
   const { user } = useUser();
@@ -55,9 +56,10 @@ export default function NewTemplatePage() {
       const storagePath = `models/${user.uid}/${modelId}.xlsx`;
       const storageRef = ref(storage, storagePath);
       
+      // We await the file upload as it is a prerequisite for the template being usable
       await uploadBytes(storageRef, file);
       
-      await addDoc(collection(db, "models"), {
+      const docData = {
         userId: user.uid,
         modelId,
         name,
@@ -66,18 +68,30 @@ export default function NewTemplatePage() {
         columns: metadata.columns,
         rows: metadata.rows,
         storagePath,
-      });
+      };
+
+      // Mutation is NOT awaited to provide an instant UI transition.
+      // Firestore will sync this in the background optimistically.
+      const modelsCollection = collection(db, "models");
+      addDoc(modelsCollection, docData)
+        .catch(async (serverError) => {
+          const permissionError = new FirestorePermissionError({
+            path: modelsCollection.path,
+            operation: 'create',
+            requestResourceData: docData,
+          });
+          errorEmitter.emit('permission-error', permissionError);
+        });
 
       toast({ title: "Template saved successfully" });
       router.push("/dashboard");
     } catch (error: any) {
+      setUploading(false);
       toast({
         variant: "destructive",
         title: "Upload Failed",
         description: error.message,
       });
-    } finally {
-      setUploading(false);
     }
   };
 

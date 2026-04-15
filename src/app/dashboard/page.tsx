@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useMemo } from "react";
@@ -11,6 +10,8 @@ import Link from "next/link";
 import { format } from "date-fns";
 import { getStorage, ref, getDownloadURL } from "firebase/storage";
 import { useToast } from "@/hooks/use-toast";
+import { errorEmitter } from "@/firebase/error-emitter";
+import { FirestorePermissionError } from "@/firebase/errors";
 
 interface Template {
   id: string;
@@ -34,14 +35,21 @@ export default function TemplatesPage() {
 
   const { data: templates, loading } = useCollection<Template>(templatesQuery);
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = (id: string) => {
     if (!db) return;
-    try {
-      await deleteDoc(doc(db, "models", id));
-      toast({ title: "Template deleted successfully" });
-    } catch (error) {
-      toast({ variant: "destructive", title: "Error deleting template" });
-    }
+    
+    const docRef = doc(db, "models", id);
+    // Mutation is NOT awaited to provide an instant UI update.
+    deleteDoc(docRef)
+      .catch(async (serverError) => {
+        const permissionError = new FirestorePermissionError({
+          path: docRef.path,
+          operation: 'delete',
+        });
+        errorEmitter.emit('permission-error', permissionError);
+      });
+    
+    toast({ title: "Template deleted" });
   };
 
   const handleDownload = async (template: Template) => {
