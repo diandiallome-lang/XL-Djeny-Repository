@@ -141,18 +141,19 @@ function adjustFormulaRow(
 
   // 3. Adjust relative row references.
   const offset = toExcelRow - fromExcelRow;
-  if (offset === 0) return processed;
 
   // Matches: optional leading non-letter, column letters, optional $, row digits.
   // Negative lookahead prevents matching numbers inside function names.
   const rowRegex = /(^|[^A-Za-z])(\$?[A-Z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_.(])/g;
 
-  return processed.replace(rowRegex, (match, prefix, col, dollar, row) => {
+  const adjusted = offset === 0 ? processed : processed.replace(rowRegex, (match, prefix, col, dollar, row) => {
     if (dollar === "$") return match; // Absolute row — keep as-is
     const newRow = parseInt(row, 10) + offset;
     if (newRow < 1) return match; // Guard against going above row 1
     return `${prefix}${col}${newRow}`;
   });
+
+  return adjusted;
 }
 
 const readWorkbook = (file: File): Promise<XLSX.WorkBook> =>
@@ -175,17 +176,17 @@ export const applyTemplateToData = async (
   templateFile: File,
   dataFile: File
 ): Promise<Blob> => {
-  console.log("Starting Template-First mirroring...");
-  const templateWb = await readWorkbook(templateFile);
+  console.log("Starting Final Template-First mirroring...");
+  const rawTemplateWb = await readWorkbook(templateFile);
   const dataWb = await readWorkbook(dataFile);
 
   // 1. Identify the 'Traitement' sheet in the template.
-  const traitSheetName = templateWb.SheetNames.find(sn => sn.toLowerCase().includes("trait")) || templateWb.SheetNames[0];
-  const traitSheet = templateWb.Sheets[traitSheetName];
+  const traitSheetName = rawTemplateWb.SheetNames.find(sn => sn.toLowerCase().includes("trait")) || rawTemplateWb.SheetNames[0];
+  const traitSheet = rawTemplateWb.Sheets[traitSheetName];
   
   if (!traitSheet) throw new Error("Could not find Traitement sheet in template.");
 
-  // 2. Load the Data Anchor to determine how many rows to generate.
+  // 2. Determine processing scale
   const dataAnchorName = dataWb.SheetNames[0];
   const dataAnchorSheet = dataWb.Sheets[dataAnchorName];
   if (!dataAnchorSheet) throw new Error("Data file is empty or invalid.");
@@ -197,26 +198,29 @@ export const applyTemplateToData = async (
     if (cell.r > actualDataMaxRow) actualDataMaxRow = cell.r;
   });
 
-  // 3. Prepare the Result Workbook. 
-  const resultWb = XLSX.utils.book_new();
+  // 3. Prepare Result Workbook by CLONING the template's structure (to keep XML flags)
+  const resultWb = {
+    ...rawTemplateWb,
+    SheetNames: [],
+    Sheets: {}
+  };
   
   // A. First, append all sheets from the DATA file.
   for (const sn of dataWb.SheetNames) {
-    if (sn === traitSheetName) continue; // Avoid name collision
+    if (sn === traitSheetName) continue;
     XLSX.utils.book_append_sheet(resultWb, dataWb.Sheets[sn], sn);
   }
 
-  // B. Then, append the 'Traitement' sheet from the TEMPLATE.
+  // B. Then, append the 'Traitement' sheet.
   XLSX.utils.book_append_sheet(resultWb, traitSheet, traitSheetName);
 
-  // 4. Mirroring Logic on the 'Traitement' sheet.
+  // 4. Mirroring Logic
   const workTraitSheet = resultWb.Sheets[traitSheetName];
   const templateRange = XLSX.utils.decode_range(workTraitSheet["!ref"] || "A1");
   const FORMULA_ROW_IDX = 1; // Pattern row (Row 2)
   const FORMULA_EXCEL_ROW = 2;
   const availableSheets = dataWb.SheetNames;
 
-  // Collect Pattern Cells from Template Row 2
   const patternCells: Record<number, XLSX.CellObject> = {};
   for (let c = templateRange.s.c; c <= templateRange.e.c; c++) {
     const addr = XLSX.utils.encode_cell({ r: FORMULA_ROW_IDX, c });
@@ -224,9 +228,8 @@ export const applyTemplateToData = async (
     if (cell) patternCells[c] = { ...cell };
   }
 
-  // Generate additional rows
   for (let dr = 0; dr <= actualDataMaxRow; dr++) {
-    const outputRowIdx = dr + 1; // Row 2, 3, 4...
+    const outputRowIdx = dr + 1;
     const outputExcelRow = outputRowIdx + 1;
 
     for (let c = templateRange.s.c; c <= templateRange.e.c; c++) {
@@ -237,27 +240,24 @@ export const applyTemplateToData = async (
 
       if (pCell.f) {
         try {
+          // Normalize sheet names AND adjust rows (normalization happens even if offset=0)
           const adjusted = adjustFormulaRow(pCell.f, FORMULA_EXCEL_ROW, outputExcelRow, availableSheets);
-          // Preserve type (t) and format (z)
-          const newCell: XLSX.CellObject = { f: adjusted, t: pCell.t, z: pCell.z };
-          workTraitSheet[outputAddr] = newCell;
+          workTraitSheet[outputAddr] = { f: adjusted, t: pCell.t, z: pCell.z };
         } catch (err) {
           workTraitSheet[outputAddr] = { f: pCell.f, t: pCell.t, z: pCell.z };
         }
       } else {
-        // Copy static cell with type and format
         workTraitSheet[outputAddr] = { ...pCell };
       }
     }
   }
 
-  // Update sheet bounds
   workTraitSheet["!ref"] = XLSX.utils.encode_range({
     s: { r: 0, c: 0 },
     e: { r: actualDataMaxRow + 1, c: templateRange.e.c }
   });
 
-  console.log("Writing Template-First output workbook...");
+  console.log("Writing Final output workbook...");
   const out = XLSX.write(resultWb, { type: "array", bookType: "xlsx" });
   return new Blob([out], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
