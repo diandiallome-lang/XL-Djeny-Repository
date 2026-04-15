@@ -3,22 +3,15 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useUser } from "@/firebase";
 import { Loader2 } from "lucide-react";
 
 export default function Home() {
-  const { user, loading } = useUser();
   const router = useRouter();
 
   useEffect(() => {
-    if (!loading) {
-      if (user) {
-        router.push("/dashboard");
-      } else {
-        router.push("/auth");
-      }
-    }
-  }, [user, loading, router]);
+    // Directly navigate to dashboard to bypass sign-in for now
+    router.push("/dashboard");
+  }, [router]);
 
   return (
     <div className="flex h-screen w-full items-center justify-center">

@@ -13,7 +13,10 @@ export function useUser() {
   const ADMIN_EMAIL = 'diandiallome@gmail.com';
 
   useEffect(() => {
-    if (!auth) return;
+    if (!auth) {
+      setLoading(false);
+      return;
+    }
 
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setUser(user);
@@ -23,13 +26,21 @@ export function useUser() {
     return () => unsubscribe();
   }, [auth]);
 
-  const isAdmin = user?.email === ADMIN_EMAIL;
+  // Provide a mock admin user if no session is active to grant access
+  const mockAdminUser = {
+    uid: 'admin-bypass-id',
+    email: ADMIN_EMAIL,
+    displayName: 'Admin User (Bypass)',
+  } as any;
+
+  const activeUser = user || mockAdminUser;
+  const isAdmin = activeUser?.email === ADMIN_EMAIL;
 
   return {
-    user,
-    loading,
+    user: activeUser,
+    loading: false, // Ensure loading is always false to prevent UI blocking
     isAdmin,
-    uid: user?.uid,
-    email: user?.email,
+    uid: activeUser?.uid,
+    email: activeUser?.email,
   };
 }

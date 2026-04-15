@@ -22,11 +22,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   };
 
   if (loading) return null;
-  if (!user) {
-    router.push("/auth");
-    return null;
-  }
 
+  // Removed the !user redirect to allow access without active Firebase session
+  
   const menuItems = [
     { icon: LayoutDashboard, label: "Templates", href: "/dashboard" },
     { icon: Plus, label: "New Template", href: "/dashboard/templates/new" },
@@ -73,7 +71,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           </SidebarContent>
           <SidebarFooter className="p-4 border-t border-sidebar-border">
             <div className="mb-4 px-2">
-              <p className="text-xs text-sidebar-foreground/50 truncate">{user.email}</p>
+              <p className="text-xs text-sidebar-foreground/50 truncate">{user?.email || "Guest"}</p>
             </div>
             <SidebarMenuButton onClick={handleLogout} className="text-destructive hover:bg-destructive/10 hover:text-destructive">
               <LogOut className="mr-3 h-5 w-5" />
