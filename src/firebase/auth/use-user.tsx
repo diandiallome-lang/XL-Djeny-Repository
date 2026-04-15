@@ -18,7 +18,7 @@ export function useUser() {
       return;
     }
 
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+  const unsubscribe = onAuthStateChanged(auth, (user) => {
       setUser(user);
       setLoading(false);
     });
@@ -26,21 +26,23 @@ export function useUser() {
     return () => unsubscribe();
   }, [auth]);
 
-  // Provide a mock admin user if no session is active to grant access
-  const mockAdminUser = {
-    uid: 'admin-bypass-id',
-    email: ADMIN_EMAIL,
-    displayName: 'Admin User (Bypass)',
-  } as any;
+  // Use useMemo to stabilize the returned user object reference
+  return useMemo(() => {
+    const mockAdminUser = {
+      uid: 'admin-bypass-id',
+      email: ADMIN_EMAIL,
+      displayName: 'Admin User (Bypass)',
+    };
 
-  const activeUser = user || mockAdminUser;
-  const isAdmin = activeUser?.email === ADMIN_EMAIL;
+    const activeUser = user || mockAdminUser;
+    const isAdmin = activeUser?.email === ADMIN_EMAIL;
 
-  return {
-    user: activeUser,
-    loading: false, // Ensure loading is always false to prevent UI blocking
-    isAdmin,
-    uid: activeUser?.uid,
-    email: activeUser?.email,
-  };
+    return {
+      user: activeUser as User,
+      loading: false,
+      isAdmin,
+      uid: activeUser?.uid,
+      email: activeUser?.email,
+    };
+  }, [user]);
 }
