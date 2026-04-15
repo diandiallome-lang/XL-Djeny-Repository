@@ -130,10 +130,12 @@ function adjustFormulaRow(
   processed = processed.replace(/;/g, ",");
 
   // 2. Normalize sheet names referenced in the formula (typo tolerance).
-  const sheetRegex = /'([^']+)'!|([A-Za-z0-9._]+)!/g;
+  // Handle optional spaces before the ! (e.g. 'Sheet' !A1)
+  const sheetRegex = /'([^']+)'\s*!|([A-Za-z0-9._]+)\s*!/g;
   processed = processed.replace(sheetRegex, (match, quoted, unquoted) => {
     const rawName = quoted || unquoted;
     const bestMatch = findBestSheetMatch(rawName, availableSheets);
+    // Standardize to the correct ! notation without extra spaces
     return bestMatch.includes(" ") ? `'${bestMatch}'!` : `${bestMatch}!`;
   });
 
@@ -158,7 +160,8 @@ const readWorkbook = (file: File): Promise<XLSX.WorkBook> =>
     const reader = new FileReader();
     reader.onload = (e) => {
       const data = new Uint8Array(e.target?.result as ArrayBuffer);
-      resolve(XLSX.read(data, { type: "array", cellFormula: true }));
+      // cellNF: true preserves number formatting (z code)
+      resolve(XLSX.read(data, { type: "array", cellFormula: true, cellNF: true }));
     };
     reader.onerror = reject;
     reader.readAsArrayBuffer(file);
@@ -195,7 +198,6 @@ export const applyTemplateToData = async (
   });
 
   // 3. Prepare the Result Workbook. 
-  // We use the templateWb as the base to keep its technical XML flags (Modern Excel).
   const resultWb = XLSX.utils.book_new();
   
   // A. First, append all sheets from the DATA file.
@@ -205,7 +207,6 @@ export const applyTemplateToData = async (
   }
 
   // B. Then, append the 'Traitement' sheet from the TEMPLATE.
-  // We'll modify it in-place within the new workbook structure.
   XLSX.utils.book_append_sheet(resultWb, traitSheet, traitSheetName);
 
   // 4. Mirroring Logic on the 'Traitement' sheet.
@@ -237,18 +238,14 @@ export const applyTemplateToData = async (
       if (pCell.f) {
         try {
           const adjusted = adjustFormulaRow(pCell.f, FORMULA_EXCEL_ROW, outputExcelRow, availableSheets);
-          // Build a clean cell: only the formula + type + optional number format.
-          // Do NOT spread pCell — mixing the original cached value (v) and internal
-          // SheetJS metadata with a new formula string corrupts the XLSX XML.
-          const newCell: XLSX.CellObject = { f: adjusted };
-          if (pCell.t) newCell.t = pCell.t; // Preserve result type (n/s/b/e)
-          if (pCell.z) newCell.z = pCell.z; // Preserve number format code
+          // Preserve type (t) and format (z)
+          const newCell: XLSX.CellObject = { f: adjusted, t: pCell.t, z: pCell.z };
           workTraitSheet[outputAddr] = newCell;
-        } catch {
-          // On error keep the original pattern cell so the sheet stays readable
-          workTraitSheet[outputAddr] = { f: pCell.f, t: pCell.t };
+        } catch (err) {
+          workTraitSheet[outputAddr] = { f: pCell.f, t: pCell.t, z: pCell.z };
         }
       } else {
+        // Copy static cell with type and format
         workTraitSheet[outputAddr] = { ...pCell };
       }
     }
@@ -261,7 +258,6 @@ export const applyTemplateToData = async (
   });
 
   console.log("Writing Template-First output workbook...");
-  // Using the template-based structure ensures Dynamic Array support is preserved.
   const out = XLSX.write(resultWb, { type: "array", bookType: "xlsx" });
   return new Blob([out], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
