@@ -115,11 +115,17 @@ function adjustFormulaRow(
 ): string {
   let processed = formula;
 
-  // 1. Handle the "Spill Operator" transformation.
-  // SheetJS often reads 'A2#' as 'ANCHORARRAY(A2)'. We must convert it back.
-  processed = processed.replace(/(?:_xlfn\._xlws\.)?ANCHORARRAY\(([^)]+)\)/g, "$1#");
+  // 1. Clean up technical prefixes that can confuse Excel after processing
+  processed = processed.replace(/(_xlws\.|_xlfn\.)/g, "");
 
-  // 2. Normalize Sheet Names with typo tolerance
+  // 2. Handle the "Spill Operator" transformation.
+  // Convert library-specific ANCHORARRAY(A2) back to standard Excel A2#
+  processed = processed.replace(/ANCHORARRAY\(([^)]+)\)/g, "$1#");
+
+  // 3. Harmonize separators (Standardize on ',' to help Excel's auto-translation)
+  processed = processed.replace(/;/g, ",");
+
+  // 4. Normalize Sheet Names with typo tolerance (e.g. ROC -> RDC)
   const sheetRegex = /'([^']+)'!|([A-Za-z0-9._]+)!/g;
   processed = processed.replace(sheetRegex, (match, quoted, unquoted) => {
     const rawName = quoted || unquoted;
@@ -127,7 +133,7 @@ function adjustFormulaRow(
     return bestMatch.includes(" ") ? `'${bestMatch}'!` : `${bestMatch}!`;
   });
 
-  // 3. Adjust Row References
+  // 5. Adjust Row References
   const offset = toExcelRow - fromExcelRow;
   if (offset === 0) return processed;
 
@@ -226,19 +232,8 @@ export const applyTemplateToData = async (
       if (pCell.f) {
         try {
           const adjusted = adjustFormulaRow(pCell.f, FORMULA_EXCEL_ROW, outputExcelRow, availableSheets);
-          
-          const newCell: XLSX.CellObject = { ...pCell, f: adjusted, v: undefined };
-          
-          // CRITICAL: If the formula is a Dynamic Array (FILTER, UNIQUE, VSTACK, etc.)
-          // we must mark it as an Array Formula with a range (even if 1-cell) 
-          // to prevent internal library mangling.
-          const isModern = /FILTER|UNIQUE|VSTACK|SORT|SEQUENCE/i.test(adjusted);
-          if (isModern) {
-             // We mark it as an array formula for this specific cell.
-             (newCell as any).F = outputAddr; 
-          }
-
-          outTraitSheet[outputAddr] = newCell;
+          // Create a clean cell object without internal library mangling or corrupting metadata
+          outTraitSheet[outputAddr] = { ...pCell, f: adjusted, v: undefined };
         } catch (err) {
           outTraitSheet[outputAddr] = { ...pCell, f: pCell.f, v: undefined };
         }
