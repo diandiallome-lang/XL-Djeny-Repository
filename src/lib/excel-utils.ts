@@ -98,11 +98,16 @@ function adjustFormulaRow(
   toExcelRow: number,
   availableSheets: string[]
 ): string {
-  // 1. Clean up technical prefixes like _xlws. or _xlfn. that can cause #NAME?
-  let processed = formula.replace(/(_xlws\.|_xlfn\.)/g, "");
+  // 1. DO NOT strip _xlfn. or _xlws. prefixes. 
+  // These are required for localized Excel to translate functions (e.g., VSTACK -> ASSEMB.V).
+  let processed = formula;
 
-  // 2. Normalize Sheet Names (e.g., 'Sheet_Name'! -> 'Sheet Name'!)
-  // This regex matches sheet names with single quotes or without quotes before the !
+  // 2. Handle the "Spill Operator" transformation.
+  // SheetJS often reads 'A2#' as 'ANCHORARRAY(A2)'. We must convert it back for Excel to understand it.
+  // This also handles cases like _xlfn._xlws.ANCHORARRAY(A2)
+  processed = processed.replace(/(?:_xlfn\._xlws\.)?ANCHORARRAY\(([^)]+)\)/g, "$1#");
+
+  // 3. Normalize Sheet Names (e.g., 'Sheet_Name'! -> 'Sheet Name'!)
   const sheetRegex = /'([^']+)'!|([A-Za-z0-9._]+)!/g;
   processed = processed.replace(sheetRegex, (match, quoted, unquoted) => {
     const rawName = quoted || unquoted;
@@ -112,10 +117,11 @@ function adjustFormulaRow(
     return bestMatch.includes(" ") ? `'${bestMatch}'!` : `${bestMatch}!`;
   });
 
-  // 3. Adjust Row References
+  // 4. Adjust Row References
   const offset = toExcelRow - fromExcelRow;
   if (offset === 0) return processed;
 
+  // We detect cell references to shift them.
   const rowRegex = /(^|[^A-Za-z])(\$?[A-Z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_.\(])/g;
 
   return processed.replace(rowRegex, (match, prefix, col, dollar, row) => {
@@ -206,6 +212,8 @@ export const applyTemplateToData = async (
   const availableSheets = dataWb.SheetNames;
 
   // Phase C: Generate Rows
+  console.log(`Generating ${actualDataMaxRow + 1} rows with ${Object.keys(patternCells).length} formula columns.`);
+
   for (let dr = 0; dr <= actualDataMaxRow; dr++) {
     const outputRowIdx = dr + 1; 
     const outputExcelRow = outputRowIdx + 1;
@@ -217,15 +225,27 @@ export const applyTemplateToData = async (
       const outputAddr = XLSX.utils.encode_cell({ r: outputRowIdx, c });
 
       if (pCell.f) {
-        // Apply formula mirroring + sheet normalization
-        const adjusted = adjustFormulaRow(
-          pCell.f, 
-          FORMULA_EXCEL_ROW, 
-          outputExcelRow,
-          availableSheets
-        );
-        outTraitSheet[outputAddr] = { ...pCell, f: adjusted, v: undefined };
+        try {
+          // Apply formula mirroring + sheet normalization
+          const adjusted = adjustFormulaRow(
+            pCell.f, 
+            FORMULA_EXCEL_ROW, 
+            outputExcelRow,
+            availableSheets
+          );
+          
+          if (dr === 0) {
+            console.log(`Col ${XLSX.utils.encode_col(c)}: Original="${pCell.f.substring(0, 50)}...", Adjusted="${adjusted.substring(0, 50)}..."`);
+          }
+
+          outTraitSheet[outputAddr] = { ...pCell, f: adjusted, v: undefined };
+        } catch (err) {
+          console.error(`Error adjusting formula in Col ${c}, Row ${outputExcelRow}:`, err);
+          // Fallback to original formula if adjustment fails
+          outTraitSheet[outputAddr] = { ...pCell, f: pCell.f, v: undefined };
+        }
       } else {
+        // Copy static value/style
         outTraitSheet[outputAddr] = { ...pCell };
       }
     }
@@ -239,6 +259,7 @@ export const applyTemplateToData = async (
   XLSX.utils.book_append_sheet(newWb, outTraitSheet, "Traitement");
 
   console.log("Writing output workbook...");
+  // Use cellStyles: true to preserve formatting if supported
   const out = XLSX.write(newWb, { type: "array", bookType: "xlsx" });
   return new Blob([out], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
