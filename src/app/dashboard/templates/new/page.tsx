@@ -5,8 +5,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ref, uploadBytes } from "firebase/storage";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
-import { db, storage } from "@/lib/firebase";
-import { useAuth } from "@/components/auth-provider";
+import { useAuth, useFirestore, useStorage, useUser } from "@/firebase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,7 +16,9 @@ import { Upload, FileSpreadsheet, Loader2, ArrowLeft, CheckCircle2 } from "lucid
 import Link from "next/link";
 
 export default function NewTemplatePage() {
-  const { user } = useAuth();
+  const { user } = useUser();
+  const db = useFirestore();
+  const storage = useStorage();
   const router = useRouter();
   const { toast } = useToast();
   
@@ -46,7 +47,7 @@ export default function NewTemplatePage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !file || !metadata) return;
+    if (!user || !file || !metadata || !db || !storage) return;
 
     setUploading(true);
     try {

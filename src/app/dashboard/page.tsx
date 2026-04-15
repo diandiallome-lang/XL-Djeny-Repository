@@ -1,16 +1,15 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
-import { collection, query, where, onSnapshot, deleteDoc, doc } from "firebase/firestore";
-import { db, storage } from "@/lib/firebase";
-import { useAuth } from "@/components/auth-provider";
+import { useMemo } from "react";
+import { collection, query, where, deleteDoc, doc } from "firebase/firestore";
+import { useUser, useFirestore, useCollection } from "@/firebase";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Plus, Download, Trash2, Play, FileSpreadsheet, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { format } from "date-fns";
-import { ref, getDownloadURL } from "firebase/storage";
+import { getStorage, ref, getDownloadURL } from "firebase/storage";
 import { useToast } from "@/hooks/use-toast";
 
 interface Template {
@@ -24,25 +23,19 @@ interface Template {
 }
 
 export default function TemplatesPage() {
-  const { user } = useAuth();
-  const [templates, setTemplates] = useState<Template[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { user } = useUser();
+  const db = useFirestore();
   const { toast } = useToast();
 
-  useEffect(() => {
-    if (!user) return;
+  const templatesQuery = useMemo(() => {
+    if (!db || !user) return null;
+    return query(collection(db, "models"), where("userId", "==", user.uid));
+  }, [db, user]);
 
-    const q = query(collection(db, "models"), where("userId", "==", user.uid));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const docs = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Template));
-      setTemplates(docs.sort((a, b) => b.createdAt?.seconds - a.createdAt?.seconds));
-      setLoading(false);
-    });
-
-    return unsubscribe;
-  }, [user]);
+  const { data: templates, loading } = useCollection<Template>(templatesQuery);
 
   const handleDelete = async (id: string) => {
+    if (!db) return;
     try {
       await deleteDoc(doc(db, "models", id));
       toast({ title: "Template deleted successfully" });
@@ -52,6 +45,8 @@ export default function TemplatesPage() {
   };
 
   const handleDownload = async (template: Template) => {
+    if (!db) return;
+    const storage = getStorage();
     try {
       const url = await getDownloadURL(ref(storage, template.storagePath));
       window.open(url, "_blank");
@@ -68,6 +63,10 @@ export default function TemplatesPage() {
     );
   }
 
+  const sortedTemplates = [...(templates || [])].sort((a, b) => 
+    (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)
+  );
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
@@ -82,7 +81,7 @@ export default function TemplatesPage() {
         </Button>
       </div>
 
-      {templates.length === 0 ? (
+      {sortedTemplates.length === 0 ? (
         <Card className="flex flex-col items-center justify-center p-12 text-center border-dashed border-2">
           <div className="rounded-full bg-muted p-4 mb-4">
             <FileSpreadsheet className="h-8 w-8 text-muted-foreground" />
@@ -97,7 +96,7 @@ export default function TemplatesPage() {
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {templates.map((t) => (
+          {sortedTemplates.map((t) => (
             <Card key={t.id} className="group hover:shadow-xl transition-all duration-300 border-none shadow-md overflow-hidden bg-white">
               <CardHeader className="pb-4">
                 <div className="flex items-start justify-between">
@@ -122,11 +121,11 @@ export default function TemplatesPage() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1">
                     <p className="text-xs text-muted-foreground uppercase font-semibold">Sheets</p>
-                    <p className="font-medium">{t.sheets.length}</p>
+                    <p className="font-medium">{t.sheets?.length || 0}</p>
                   </div>
                   <div className="space-y-1">
                     <p className="text-xs text-muted-foreground uppercase font-semibold">Columns</p>
-                    <p className="font-medium">{t.columns}</p>
+                    <p className="font-medium">{t.columns || 0}</p>
                   </div>
                 </div>
               </CardContent>

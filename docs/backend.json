@@ -1,0 +1,46 @@
+
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "App user profile information.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] }
+      },
+      "required": ["uid", "email"]
+    },
+    "ExcelModel": {
+      "title": "Excel Model",
+      "description": "A template for processing Excel files.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "modelId": { "type": "string" },
+        "name": { "type": "string" },
+        "createdAt": { "type": "object" },
+        "sheets": { "type": "array", "items": { "type": "string" } },
+        "columns": { "type": "number" },
+        "rows": { "type": "number" },
+        "storagePath": { "type": "string" }
+      },
+      "required": ["userId", "modelId", "name", "storagePath"]
+    }
+  },
+  "auth": {
+    "providers": ["password"]
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/backend/entities/User" },
+      "description": "User profiles and roles"
+    },
+    "/models/{modelId}": {
+      "schema": { "$ref": "#/backend/entities/ExcelModel" },
+      "description": "Stored Excel templates"
+    }
+  }
+}

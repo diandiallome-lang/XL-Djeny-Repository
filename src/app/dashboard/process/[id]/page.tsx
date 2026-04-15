@@ -5,16 +5,18 @@ import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { doc, getDoc } from "firebase/firestore";
 import { ref, getBytes } from "firebase/storage";
-import { db, storage } from "@/lib/firebase";
+import { useFirestore, useStorage } from "@/firebase";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { applyTemplateToData } from "@/lib/excel-utils";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, FileSpreadsheet, Upload, Download, CheckCircle2, ArrowLeft } from "lucide-react";
+import { Loader2, FileSpreadsheet, Upload, Download, CheckCircle2, ArrowLeft, Play } from "lucide-react";
 import Link from "next/link";
 
 export default function ProcessPage() {
   const { id } = useParams() as { id: string };
+  const db = useFirestore();
+  const storage = useStorage();
   const [template, setTemplate] = useState<any>(null);
   const [dataFile, setDataFile] = useState<File | null>(null);
   const [processing, setProcessing] = useState(false);
@@ -23,6 +25,7 @@ export default function ProcessPage() {
 
   useEffect(() => {
     const fetchTemplate = async () => {
+      if (!db) return;
       const docRef = doc(db, "models", id);
       const docSnap = await getDoc(docRef);
       if (docSnap.exists()) {
@@ -30,10 +33,10 @@ export default function ProcessPage() {
       }
     };
     fetchTemplate();
-  }, [id]);
+  }, [id, db]);
 
   const handleProcess = async () => {
-    if (!template || !dataFile) return;
+    if (!template || !dataFile || !storage) return;
 
     setProcessing(true);
     try {

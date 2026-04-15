@@ -3,24 +3,29 @@
 
 import { ReactNode } from "react";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarRail, SidebarTrigger } from "@/components/ui/sidebar";
-import { FileSpreadsheet, LayoutDashboard, Sparkles, LogOut, Plus } from "lucide-react";
-import { useAuth } from "@/components/auth-provider";
+import { FileSpreadsheet, LayoutDashboard, Sparkles, LogOut, Plus, ShieldCheck } from "lucide-react";
+import { useUser, useAuth } from "@/firebase";
 import { signOut } from "firebase/auth";
-import { auth } from "@/lib/firebase";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { user, isAdmin, loading } = useUser();
+  const auth = useAuth();
   const router = useRouter();
   const pathname = usePathname();
 
   const handleLogout = async () => {
+    if (!auth) return;
     await signOut(auth);
     router.push("/auth");
   };
 
-  if (!user) return null;
+  if (loading) return null;
+  if (!user) {
+    router.push("/auth");
+    return null;
+  }
 
   const menuItems = [
     { icon: LayoutDashboard, label: "Templates", href: "/dashboard" },
@@ -37,7 +42,15 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-lg shadow-primary/20">
                 <FileSpreadsheet className="h-5 w-5" />
               </div>
-              <span className="font-headline text-lg font-bold tracking-tight">Formulytics</span>
+              <div className="flex flex-col">
+                <span className="font-headline text-lg font-bold tracking-tight">Formulytics</span>
+                {isAdmin && (
+                  <div className="flex items-center gap-1 text-[10px] text-primary-foreground/70 bg-white/10 px-1.5 rounded-full w-fit mt-0.5">
+                    <ShieldCheck className="h-2 w-2" />
+                    <span>ADMIN</span>
+                  </div>
+                )}
+              </div>
             </div>
           </SidebarHeader>
           <SidebarContent>
